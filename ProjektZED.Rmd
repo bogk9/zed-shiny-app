@@ -1,0 +1,251 @@
+---
+title: "Projekt ZED"
+author: "Bogumił Kania"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: 
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+    theme: readable
+  pdf_document: default
+runtime: shiny
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(ggsci)
+library(shiny)
+library(plotly)
+library(flexdashboard)
+library(tidyverse)
+library(readr)
+```
+
+# Wstęp
+
+W tym dokumencie skupiono się na dokładnej analizie danych dotyczących klocków LEGO, które pozyskano z bazy danych Rebrickable. Rebrickable to znane źródło informacji o różnych zestawach LEGO, ich częściach i sposobie, w jaki te elementy się ze sobą łączą.
+
+Analiza zawiera spostrzeżenia dotyczące  różnych aspektów zestawów LEGO. Przeanalizowano, jak na przestrzeni lat zmieniała się złożoność zestawów, jakie kolory są najczęściej używane, a także jak rozkładają się poszczególne części w różnych zestawach.
+
+# Executive summary
+
+Analiza wykazała, że kolor czarny dominuje wśród części LEGO. Również biały, szary i czerwony cieszą się dużą popularnością. Obserwuje się zwiększającą się średnią liczbę części na zestaw w czasie, co sugeruje wzrost złożoności zestawów LEGO. Produkcja zestawów również wzrasta, z największym skokiem liczby zestawów w ostatnich latach. Trendy te zostały poddane modelowaniu (model predykcyjny), które wskazuje na dalszy wzrost liczby części na zestaw aż do roku 2030, sugerując, że LEGO będzie kontynuować trend w kierunku bardziej złożonych i bogatych w części zestawów.
+
+```{r read_data, echo=FALSE, include=FALSE, cache=TRUE}
+data_dir <- "data"
+file_names <- list.files(path = data_dir, pattern = "\\.csv\\.gz$", full.names = TRUE)
+data_list <- list()
+for (file in file_names) {
+  data <- read_csv(file)
+  data_list[[basename(file)]] <- data
+}
+
+```
+
+# Analizy danych
+
+## Analizy ilościowe
+
+### Ilość klocków w zestawach
+```{r parts_distr, echo=FALSE, warning=FALSE, message=FALSE, cache=TRUE}
+
+output$hist <- renderPlot({
+  sets_data <- data_list[["sets.csv.gz"]]
+  ggplot(sets_data, aes(x = num_parts)) +
+    geom_histogram(binwidth = input$binwidth, fill = "skyblue", color = "black") +
+    labs(title = "Rozkład ilości części w zestawach Lego",
+         x = "Ilość części",
+         y = "Liczba zestawów")
+})
+
+sliderInput("binwidth", "Bin Width:", 
+            min = 50, max = 300, value = 150, step = 1)
+
+plotOutput("hist")
+```
+
+
+### Najpopularniejsze kolory
+```{r colors, echo=FALSE, warning=FALSE, message=FALSE, cache=TRUE}
+colors_data <- data_list[["colors.csv.gz"]]
+inventory_parts_data <- data_list[["inventory_parts.csv.gz"]]
+parts_colors_data <- merge(inventory_parts_data, colors_data, by.x = "color_id", by.y = "id", all.x = TRUE)
+popular_colors <- parts_colors_data %>%
+  group_by(name, rgb) %>%
+  summarize(num_parts = n()) %>%
+  arrange(desc(num_parts)) %>%
+  head(n = 10)
+
+ggplot(popular_colors, aes(x = reorder(name, -num_parts), y = num_parts, fill=reorder(name, -num_parts))) +
+  geom_col(color = "black") +
+  scale_fill_manual(values=paste("#", popular_colors$rgb, sep="")) + 
+  labs(title = "Najpopularniejsze kolory klocków Lego",
+       fill = "Kolor",
+       x = "Kolor",
+       y = "Liczba części") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### Ilość minifigurek w zestawach
+
+```{r minifigs_quantity, echo=FALSE, warning=FALSE, message=FALSE}
+
+inventory_minifigs_data <- data_list[["inventory_minifigs.csv.gz"]]
+inventories_data <- data_list[["inventories.csv.gz"]]
+minifigs_data <- data_list[["minifigs.csv.gz"]]
+inventory_sets_data <- data_list[["inventory_sets.csv.gz"]]
+sets_data <- data_list[["sets.csv.gz"]]
+
+sets_minifigs_data <- merge(inventory_minifigs_data, minifigs_data, by = "fig_num", all.x=TRUE)
+sets_minifigs_data <- merge(sets_minifigs_data, inventories_data, by.x="inventory_id", by.y="id" , all.x=TRUE)
+sets_minifigs_data <- merge(sets_minifigs_data, sets_data, by="set_num")
+
+minifigs_count_per_set <- sets_minifigs_data %>%
+  group_by(set_num, name.y) %>%
+  summarize(num_minifigs = n()) %>%
+  arrange(desc(num_minifigs)) %>%
+  head(n = 10)
+  
+minifigs_count_per_set <- head(minifigs_count_per_set)
+
+ggplot(minifigs_count_per_set, aes(x = reorder(name.y, -num_minifigs), y = num_minifigs)) +
+  geom_col(fill = 'lightblue') +
+  geom_text(aes(label = num_minifigs), vjust = -0.3, size = 3.5) +
+  labs(title = "Zestawy z największa ilością minifigurek",
+       x = "Zestaw",
+       y = "Ilość (szt.)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+```
+
+
+### Zmiana ilości klocków w zestawach
+
+```{r parts_growth_over_time, warning=FALSE, message=FALSE, echo=FALSE}
+sets_data <- data_list[["sets.csv.gz"]]
+
+sets_data$year <- as.numeric(as.character(sets_data$year))
+
+average_parts_per_year <- sets_data %>%
+  group_by(year) %>%
+  summarize(average_num_parts = mean(num_parts, na.rm = TRUE)) %>%
+  filter(year > 0)
+
+ggplot(average_parts_per_year, aes(x = year, y = average_num_parts)) +
+  geom_line(size = 1, color = "lightblue") +
+  geom_point(color = "orange") +
+  expand_limits(y = 0) +
+  labs(title = "Średnia liczba części na zestaw w czasie",
+       x = "Rok",
+       y = "Średnia liczba części") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+## Produkcja
+
+### Produkcja w danych latach
+
+```{r production_trends, warning=FALSE, message=FALSE, echo=FALSE}
+sets_data <- data_list[["sets.csv.gz"]]
+
+sets_data$year <- as.numeric(sets_data$year)
+sets_production_trend <- sets_data %>%
+  group_by(year) %>%
+  summarize(num_sets = n())
+
+sets_production_trend <- sets_production_trend %>% filter(!is.na(num_sets) & num_sets > 0)
+
+ggplot(sets_production_trend, aes(x = year, y = num_sets)) +
+  geom_line(color = "skyblue") +
+  labs(title = "Zmiany w produkcji zestawów Lego w czasie",
+       x = "Rok",
+       y = "Liczba zestawów")
+
+```
+
+### Wzrost produkcji rok do roku
+
+```{r yty_prod_growth, echo=FALSE}
+
+sets_production_trend <- sets_data %>%
+  group_by(year) %>%
+  summarize(num_sets = n())
+
+sets_production_trend <- sets_production_trend %>% 
+  arrange(year) %>%
+  mutate(growth = num_sets / lag(num_sets))
+
+sets_production_growth <- sets_production_trend %>%
+  filter(!is.na(growth) & growth >= 0) %>%
+  arrange(desc(growth)) %>%
+  head(n = 10)
+
+highest_growth_years <- sets_production_growth %>%
+  top_n(5, growth) %>%
+  ungroup() %>%
+  mutate(Year = as.factor(year))
+
+
+# Tworzenie wykresu
+ggplot(highest_growth_years, aes(x = reorder(Year, -growth), y = growth)) +
+  geom_col(fill = 'lightblue') +
+  geom_text(aes(label = scales::percent(growth)), vjust = -0.3, size = 3.5) +
+  labs(title = "Top 5 Lat z Największym Wzrostem Produkcji Zestawów LEGO",
+       x = "Rok",
+       y = "Wzrost procentowy") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Predykcja
+
+## Wzrost produkcji w kolejnych latach
+
+```{r pred, echo=FALSE, warning=FALSE, message=FALSE}
+
+sets_data <- data_list[["sets.csv.gz"]]
+sets_data <- sets_data %>%
+  mutate(year = as.numeric(as.character(year))) %>%
+  filter(!is.na(year) & year > 0 & !is.na(num_parts))
+
+grouped_sets_data <- sets_data %>%
+  group_by(year) %>%
+  summarize(num_parts = sum(num_parts)) %>%
+  tail(10)
+
+grouped_sets_data <- grouped_sets_data[1:(nrow(grouped_sets_data) - 1), ]
+
+model <- lm(num_parts ~ year, data = grouped_sets_data)
+#summary(model)
+
+future_years <- data.frame(year = seq(max(grouped_sets_data$year) + 1, 2030, by = 1))
+predictions <- predict(model, newdata = future_years)
+
+future_predictions <- cbind(future_years, num_parts = predictions)
+
+plot_data <- rbind(
+  grouped_sets_data,
+  transform(future_predictions, num_parts = round(num_parts))
+)
+
+ggplot(plot_data, aes(x = year, y = num_parts)) +
+  geom_line(data = plot_data[plot_data$year <= max(sets_data$year), ], aes(group = 1), color = "blue") +
+  geom_line(data = plot_data[plot_data$year > max(sets_data$year), ], aes(group = 1), color = "orange", linetype = "dashed") +
+  geom_point(data = plot_data[plot_data$year <= max(sets_data$year), ], color = "blue") +
+  geom_point(data = plot_data[plot_data$year > max(sets_data$year), ], color = "orange") +
+  labs(title = "Predykcja liczebności zestawów do roku 2030",
+       x = "Rok",
+       y = "Przewidywana ilość elementów") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
